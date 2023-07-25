@@ -38,6 +38,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/socket.h>
 #include <sys/bus.h>
 #include <sys/malloc.h>
+#include <sys/gpio.h>
 
 #include <net/if.h>
 #include <net/if_media.h>
@@ -45,6 +46,7 @@ __FBSDID("$FreeBSD$");
 #include <dev/ofw/openfirm.h>
 #include <dev/ofw/ofw_bus.h>
 #include <dev/ofw/ofw_bus_subr.h>
+#include <dev/gpio/gpiobusvar.h>
 
 #include <dev/mii/mii.h>
 #include <dev/mii/miivar.h>
@@ -176,7 +178,10 @@ mii_fdt_get_contype(phandle_t macnode)
 void
 mii_fdt_free_config(struct mii_fdt_phy_config *cfg)
 {
-
+	if (cfg->reset_gpio) {
+		gpiobus_release_pin(GPIO_GET_BUS(cfg->reset_gpio->dev), cfg->reset_gpio->pin);
+		free(cfg->reset_gpio, M_DEVBUF);
+	}
 	free(cfg, M_OFWPROP);
 }
 
@@ -187,6 +192,7 @@ mii_fdt_get_config(device_t phydev)
 	mii_fdt_phy_config_t *cfg;
 	device_t miibus, macdev;
 	pcell_t val;
+	int rc;
 
 	ma = device_get_ivars(phydev);
 	miibus = device_get_parent(phydev);
@@ -202,6 +208,21 @@ mii_fdt_get_config(device_t phydev)
 		return (cfg);
 
 	cfg->con_type = mii_fdt_get_contype(cfg->macnode);
+	if (OF_hasprop(cfg->macnode, "phy-reset-gpios")) {
+		rc = gpio_pin_get_by_ofw_property(phydev, cfg->macnode, "phy-reset-gpios",
+		    &cfg->reset_gpio);
+		if (rc == 0) {
+			gpio_pin_setflags(cfg->reset_gpio, GPIO_PIN_OUTPUT);
+			gpio_pin_set_active(cfg->reset_gpio, true);
+			if (OF_getencprop(cfg->phynode, "phy-reset-duration", &val, sizeof(val)) > 0)
+				cfg->reset_assert_us = val * 1000;
+			else {
+				cfg->reset_assert_us = 1000;
+			}
+			if (OF_getencprop(cfg->phynode, "phy-reset-postdelay", &val, sizeof(val)) > 0)
+				cfg->reset_assert_us = val * 1000;
+		}
+	}
 
 	/*
 	 * If we can't find our own PHY node, there's nothing more we can fill
@@ -236,6 +257,23 @@ mii_fdt_get_config(device_t phydev)
 		cfg->flags |= MIIF_FDT_EEE_BROKEN_10GKX4;
 	if (OF_hasprop(cfg->phynode, "eee-broken-10gkr"))
 		cfg->flags |= MIIF_FDT_EEE_BROKEN_10GKR;
+	if (OF_hasprop(cfg->phynode, "reset-gpios")) {
+		if (cfg->reset_gpio) {
+			gpiobus_release_pin(GPIO_GET_BUS(cfg->reset_gpio->dev), cfg->reset_gpio->pin);
+			free(cfg->reset_gpio, M_DEVBUF);
+			cfg->reset_gpio = NULL;
+		}
+		rc = gpio_pin_get_by_ofw_property(phydev, cfg->phynode, "reset-gpios",
+		    &cfg->reset_gpio);
+		if (rc == 0) {
+			gpio_pin_setflags(cfg->reset_gpio, GPIO_PIN_OUTPUT);
+			gpio_pin_set_active(cfg->reset_gpio, true);
+			if (OF_getencprop(cfg->phynode, "reset-assert-us", &val, sizeof(val)) > 0)
+				cfg->reset_assert_us = val;
+			if (OF_getencprop(cfg->phynode, "reset-deassert-us", &val, sizeof(val)) > 0)
+				cfg->reset_deassert_us = val;
+		}
+	}
 
 	return (cfg);
 }

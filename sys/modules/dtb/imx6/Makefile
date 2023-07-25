@@ -15,5 +15,6 @@ DTS=	\
 	imx6dl-wandboard-revb1.dts \
 	imx6q-wandboard.dts \
 	imx6q-wandboard-revb1.dts \
+	sbc_ec9100.dts \
 
 .include <bsd.dtb.mk>

@@ -132,7 +132,8 @@ adc_probe(device_t dev)
 		return (ENXIO);
 
 	if (!ofw_bus_is_compatible(dev, "fsl,mvf600-adc"))
-		return (ENXIO);
+		if (!ofw_bus_is_compatible(dev, "fsl,vf610-adc"))
+			return (ENXIO);
 
 	device_set_desc(dev, "Vybrid Family "
 	    "12-bit Analog to Digital Converter");

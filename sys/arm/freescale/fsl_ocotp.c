@@ -47,6 +47,7 @@ __FBSDID("$FreeBSD$");
 
 #include <arm/freescale/fsl_ocotpreg.h>
 #include <arm/freescale/fsl_ocotpvar.h>
+#include <arm/freescale/imx/imx_machdep.h>
 
 /*
  * Find the physical address and size of the ocotp registers and devmap them,
@@ -63,6 +64,14 @@ __FBSDID("$FreeBSD$");
 #include <dev/fdt/fdt_common.h>
 #include <sys/devmap.h>
 
+/*
+ * Table of CPU max frequencies.  This is used to translate the max frequency
+ * value (0-3) from the ocotp CFG3 register into a mhz value that can be looked
+ * up in the operating points table.
+ */
+static uint32_t imx6q_ocotp_mhz_tab[] = {792, 852, 996, 1200};
+static uint32_t imx6ul_ocotp_mhz_tab[] = {0, 528, 696, 0};
+
 static uint32_t   *ocotp_regs;
 static vm_size_t   ocotp_size;
 
@@ -75,7 +84,8 @@ fsl_ocotp_devmap(void)
 	if ((root = OF_finddevice("/")) == -1)
 		goto fatal;
 	if ((child = fdt_depth_search_compatible(root, "fsl,imx6q-ocotp", 0)) == 0)
-		goto fatal;
+		if ((child = fdt_depth_search_compatible(root, "fsl,imx6ul-ocotp", 0)) == 0)
+			goto fatal;
 	if (fdt_regsize(child, &base, &size) != 0)
 		goto fatal;
 
@@ -149,12 +159,12 @@ out:
 static int
 ocotp_probe(device_t dev)
 {
-
 	if (!ofw_bus_status_okay(dev))
 		return (ENXIO);
 
 	if (ofw_bus_is_compatible(dev, "fsl,imx6q-ocotp") == 0)
-		return (ENXIO);
+		if (ofw_bus_is_compatible(dev, "fsl,imx6ul-ocotp") == 0)
+			return (ENXIO);
 
 	device_set_desc(dev, 
 	    "Freescale On-Chip One-Time-Programmable Memory");
@@ -162,7 +172,7 @@ ocotp_probe(device_t dev)
 	return (BUS_PROBE_DEFAULT);
 }
 
-uint32_t
+static uint32_t
 fsl_ocotp_read_4(bus_size_t off)
 {
 
@@ -183,6 +193,41 @@ fsl_ocotp_read_4(bus_size_t off)
 		fsl_ocotp_devmap();
 
 	return (ocotp_regs[off / 4]);
+}
+
+uint32_t
+fsl_ocotp_get_max_mhz(void)
+{
+	uint32_t cfg3speed;
+
+	/*
+	 * Get the maximum speed this cpu can be set to.  The values in the
+	 * OCOTP CFG3 register are not documented in the reference manual.
+	 * The following info was in an archived email found via web search:
+	 *   - 2b'11: 1200000000Hz;
+	 *   - 2b'10: 996000000Hz;
+	 *   - 2b'01: 852000000Hz; -- i.MX6Q Only, exclusive with 996MHz.
+	 *   - 2b'00: 792000000Hz;
+	 * The default hardware max speed can be overridden by a tunable.
+	 */
+	cfg3speed = (fsl_ocotp_read_4(FSL_OCOTP_CFG3) &
+	    FSL_OCOTP_CFG3_SPEED_MASK) >> FSL_OCOTP_CFG3_SPEED_SHIFT;
+	if (imx_soc_type() == IMXSOC_6UL)
+		return imx6ul_ocotp_mhz_tab[cfg3speed];
+	else
+		return imx6q_ocotp_mhz_tab[cfg3speed];
+	return 0;
+}
+
+void
+fsl_ocotp_get_temp_calibration(uint32_t *room_cnt, uint32_t *high_cnt, uint32_t *high_val)
+{
+	uint32_t cal;
+
+	cal = fsl_ocotp_read_4(FSL_OCOTP_ANA1);
+	*room_cnt = (cal & 0xFFF00000) >> 20;
+	*high_cnt = (cal & 0x000FFF00) >> 8;
+	*high_val = (cal & 0x000000FF) * 10;
 }
 
 static device_method_t ocotp_methods[] = {

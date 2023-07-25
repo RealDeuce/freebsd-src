@@ -38,6 +38,8 @@
 
 #define	IOMUXC_GPR0			0x00
 #define	IOMUXC_GPR1			0x04
+#define   IOMUXC_GPR1_ENET1_CLK_SEL	  (1u << 13)
+#define   IOMUXC_GPR1_ENET1_TX_CLK_DIR	  (1u << 17)
 #define	IOMUXC_GPR2			0x08
 #define	IOMUXC_GPR3			0x0C
 #define	  IOMUXC_GPR3_HDMI_MASK		  (3 << 2)

@@ -58,6 +58,7 @@ int imx_ccm_pll_video_enable(void);
 void imx_ccm_hdmi_enable(void);
 void imx_ccm_ipu_enable(int ipu);
 int  imx6_ccm_sata_enable(void);
+int imx6ul_ccm_enet_set50(void);
 
 /* Routines to get and set the arm clock root divisor register. */
 uint32_t imx_ccm_get_cacrr(void);

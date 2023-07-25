@@ -31,6 +31,7 @@
 #ifndef	FSL_OCOTPVAR_H
 #define	FSL_OCOTPVAR_H
 
-uint32_t fsl_ocotp_read_4(bus_size_t _offset);
+uint32_t fsl_ocotp_get_max_mhz(void);
+void fsl_ocotp_get_temp_calibration(uint32_t *room_cnt, uint32_t *high_cnt, uint32_t *high_val);
 
 #endif

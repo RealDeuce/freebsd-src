@@ -121,6 +121,7 @@ pmu_attach(device_t dev)
 			    "Unable to setup interrupt handler.\n");
 			goto fail;
 		}
+#ifdef SMP
 		if (sc->irq[i].cpuid != -1) {
 			err = bus_bind_intr(dev, sc->irq[i].res,
 			    sc->irq[i].cpuid);
@@ -130,6 +131,7 @@ pmu_attach(device_t dev)
 				goto fail;
 			}
 		}
+#endif
 	}
 
 #if defined(__arm__) && (__ARM_ARCH > 6)

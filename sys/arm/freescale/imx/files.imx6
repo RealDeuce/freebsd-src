@@ -4,6 +4,7 @@
 # Standard imx6 devices and support.
 #
 arm/freescale/fsl_ocotp.c		standard
+arm/freescale/vybrid/vf_adc.c		optional vf_adc
 arm/freescale/imx/imx6_anatop.c		standard
 arm/freescale/imx/imx6_ccm.c		standard
 arm/freescale/imx/imx6_machdep.c	standard

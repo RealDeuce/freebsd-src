@@ -178,6 +178,7 @@ struct fsl_sdhci_softc {
 static struct ofw_compat_data compat_data[] = {
 	{"fsl,imx6q-usdhc",	HWTYPE_USDHC},
 	{"fsl,imx6sl-usdhc",	HWTYPE_USDHC},
+	{"fsl,imx6ul-usdhc",	HWTYPE_USDHC},
 	{"fsl,imx53-esdhc",	HWTYPE_ESDHC},
 	{"fsl,imx51-esdhc",	HWTYPE_ESDHC},
 	{"fsl,esdhc",		HWTYPE_ESDHC},

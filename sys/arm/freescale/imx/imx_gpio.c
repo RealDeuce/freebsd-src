@@ -134,6 +134,7 @@ struct imx51_gpio_softc {
 static struct ofw_compat_data compat_data[] = {
 	{"fsl,imx8mq-gpio",	1},
 	{"fsl,imx6q-gpio",	1},
+	{"fsl,imx6ul-gpio",	1},
 	{"fsl,imx53-gpio",	1},
 	{"fsl,imx51-gpio",	1},
 	{NULL,			0}

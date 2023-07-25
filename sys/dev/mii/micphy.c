@@ -60,6 +60,7 @@ __FBSDID("$FreeBSD$");
 #include <dev/ofw/ofw_bus.h>
 #include <dev/ofw/ofw_bus_subr.h>
 #include <dev/mii/mii_fdt.h>
+#include <dev/gpio/gpiobusvar.h>
 
 #define	MII_KSZPHY_EXTREG			0x0b
 #define	 KSZPHY_EXTREG_WRITE			(1 << 15)
@@ -78,8 +79,19 @@ __FBSDID("$FreeBSD$");
 #define	MII_KSZ9031_CLOCK_PAD_SKEW		0x8
 
 #define	MII_KSZ8081_PHYCTL2			0x1f
+#define  MII_KSZ8081_PHYCTL2_LED_SHIFT		 4
+#define  MII_KSZ8081_PHYCTL2_LED_MASK		 (3 << MII_KSZ8081_PHYCTL2_LED_SHIFT)
+#define  MII_KSZ8081_PHYCTL2_50MHZ_RMII		 (1 << 7)
 
 #define	PS_TO_REG(p)	((p) / 200)
+
+struct micphy_softc {
+	struct mii_softc mii_softc;
+	mii_fdt_phy_config_t *cfg;
+	device_t dev;
+	uint16_t ctrl2_set_bits;
+	uint16_t ctrl2_clr_bits;
+};
 
 static int micphy_probe(device_t);
 static int micphy_attach(device_t);
@@ -98,7 +110,7 @@ static device_method_t micphy_methods[] = {
 static driver_t micphy_driver = {
 	"micphy",
 	micphy_methods,
-	sizeof(struct mii_softc)
+	sizeof(struct micphy_softc)
 };
 
 DRIVER_MODULE(micphy, miibus, micphy_driver, 0, 0);
@@ -247,23 +259,48 @@ micphy_probe(device_t dev)
 	return (mii_phy_dev_probe(dev, micphys, BUS_PROBE_DEFAULT));
 }
 
+static void
+micphy_get_ctrl2_bits(struct micphy_softc *msc)
+{
+	pcell_t val;
+
+	msc->ctrl2_set_bits = 0;
+	msc->ctrl2_clr_bits = 0;
+
+	if (msc->cfg) {
+		if (msc->cfg->phynode != -1) {
+			if (OF_getencprop(msc->cfg->phynode, "micrel,led-mode", &val, sizeof(val)) > 0) {
+				msc->ctrl2_set_bits |= (val << MII_KSZ8081_PHYCTL2_LED_SHIFT) &
+				    MII_KSZ8081_PHYCTL2_LED_MASK;
+				msc->ctrl2_clr_bits |= MII_KSZ8081_PHYCTL2_LED_MASK;
+			}
+		}
+		/*
+		 * Assume a 50MHz clock for RMII, for everything else,
+		 * assume the defaults are fine, or the bootloader set
+		 * them up properly.
+		 */
+		if (msc->cfg->con_type == MII_CONTYPE_RMII) {
+			msc->ctrl2_set_bits |= MII_KSZ8081_PHYCTL2_50MHZ_RMII;
+		}
+	}
+}
+
 static int
 micphy_attach(device_t dev)
 {
-	mii_fdt_phy_config_t *cfg;
+	struct micphy_softc *msc;
 	struct mii_softc *sc;
 	phandle_t node;
 	device_t miibus;
 	device_t parent;
 
-	sc = device_get_softc(dev);
+	msc = device_get_softc(dev);
+	sc = &msc->mii_softc;
+	msc->dev = dev;
 
 	mii_phy_dev_attach(dev, MIIF_NOMANPAUSE, &micphy_funcs, 1);
 	mii_phy_setmedia(sc);
-
-	/* Nothing further to configure for 8081 model. */
-	if (sc->mii_mpd_model == MII_MODEL_MICREL_KSZ8081)
-		return (0);
 
 	miibus = device_get_parent(dev);
 	parent = device_get_parent(miibus);
@@ -271,12 +308,20 @@ micphy_attach(device_t dev)
 	if ((node = ofw_bus_get_node(parent)) == -1)
 		return (ENXIO);
 
-	cfg = mii_fdt_get_config(dev);
+	msc->cfg = mii_fdt_get_config(dev);
+	micphy_get_ctrl2_bits(msc);
+
+	if (msc->cfg && msc->cfg->reset_gpio)
+		micphy_reset(sc);
+
+	/* Nothing further to configure for 8081 model. */
+	if (sc->mii_mpd_model == MII_MODEL_MICREL_KSZ8081)
+		return (0);
 
 	if (sc->mii_mpd_model == MII_MODEL_MICREL_KSZ9031)
-		ksz9031_load_values(sc, cfg->phynode);
+		ksz9031_load_values(sc, msc->cfg->phynode);
 	else
-		ksz9021_load_values(sc, cfg->phynode);
+		ksz9021_load_values(sc, msc->cfg->phynode);
 
 	return (0);
 }
@@ -285,6 +330,8 @@ static void
 micphy_reset(struct mii_softc *sc)
 {
 	int reg;
+	int rc;
+	struct micphy_softc *msc = (struct micphy_softc *)sc;
 
 	/*
 	 * The 8081 has no "sticky bits" that survive a soft reset; several bits
@@ -292,11 +339,32 @@ micphy_reset(struct mii_softc *sc)
 	 * These bits are set up by the bootloader; they control how the phy
 	 * interfaces to the board (such as clock frequency and LED behavior).
 	 */
-	if (sc->mii_mpd_model == MII_MODEL_MICREL_KSZ8081)
+	if (sc->mii_mpd_model == MII_MODEL_MICREL_KSZ8081) {
 		reg = PHY_READ(sc, MII_KSZ8081_PHYCTL2);
-	mii_phy_reset(sc);
-	if (sc->mii_mpd_model == MII_MODEL_MICREL_KSZ8081)
+		if (reg == 0xffff)
+			reg = 0x8100;
+	}
+	if (msc->cfg && msc->cfg->reset_gpio) {
+		rc = gpio_pin_set_active(msc->cfg->reset_gpio, true);
+		if (rc) {
+			device_printf(msc->dev, "Failed to set reset pin active: %d\n", rc);
+		}
+		DELAY(msc->cfg->reset_assert_us);
+		if (rc == 0 && gpio_pin_set_active(msc->cfg->reset_gpio, false)) {
+			device_printf(msc->dev, "Failed to set reset pin inactive: %d\n", rc);
+		}
+		DELAY(msc->cfg->reset_deassert_us);
+	}
+	else
+	{
+		mii_phy_reset(sc);
+	}
+
+	if (sc->mii_mpd_model == MII_MODEL_MICREL_KSZ8081) {
+		reg &= ~msc->ctrl2_clr_bits;
+		reg |= msc->ctrl2_set_bits;
 		PHY_WRITE(sc, MII_KSZ8081_PHYCTL2, reg);
+	}
 }
 
 static int

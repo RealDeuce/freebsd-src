@@ -51,6 +51,12 @@ __FBSDID("$FreeBSD$");
 #include <arm/freescale/imx/imx_machdep.h>
 #include <arm/freescale/imx/imx_ccmvar.h>
 
+#include <arm/freescale/imx/imx_iomuxvar.h>
+#include <arm/freescale/imx/imx_iomuxreg.h>
+#include <dev/extres/syscon/syscon.h>
+
+#include "syscon_if.h"
+
 #ifndef CCGR_CLK_MODE_ALWAYS
 #define	CCGR_CLK_MODE_OFF		0
 #define	CCGR_CLK_MODE_RUNMODE		1
@@ -63,6 +69,8 @@ struct ccm_softc {
 };
 
 static struct ccm_softc *ccm_sc;
+
+static int imx6ul_ccm_enet_enable(uint32_t div);
 
 static inline uint32_t
 RD4(struct ccm_softc *sc, bus_size_t off)
@@ -91,41 +99,66 @@ static void
 ccm_init_gates(struct ccm_softc *sc)
 {
 	uint32_t reg;
+	u_int soc = imx_soc_type();
 
- 	/* ahpbdma, aipstz 1 & 2 buses */
-	reg = CCGR0_AIPS_TZ1 | CCGR0_AIPS_TZ2 | CCGR0_ABPHDMA;
+	if (soc == IMXSOC_6UL)
+		reg = 0xffffffff;
+	else
+		/* ahpbdma, aipstz 1 & 2 buses */
+		reg = CCGR1_ENET | CCGR1_EPIT1 | CCGR1_GPT | CCGR1_ECSPI1 |
+		    CCGR1_ECSPI2 | CCGR1_ECSPI3 | CCGR1_ECSPI4 | CCGR1_ECSPI5;
 	WR4(sc, CCM_CCGR0, reg);
 
-	/* enet, epit, gpt, spi */
-	reg = CCGR1_ENET | CCGR1_EPIT1 | CCGR1_GPT | CCGR1_ECSPI1 |
-	    CCGR1_ECSPI2 | CCGR1_ECSPI3 | CCGR1_ECSPI4 | CCGR1_ECSPI5;
+	if (soc == IMXSOC_6UL)
+		reg = 0xffffffff;
+	else
+		/* enet, epit, gpt, spi */
+		reg = CCGR2_I2C1 | CCGR2_I2C2 | CCGR2_I2C3 | CCGR2_IIM |
+		    CCGR2_IOMUX_IPT | CCGR2_IPMUX1 | CCGR2_IPMUX2 | CCGR2_IPMUX3 |
+		    CCGR2_IPSYNC_IP2APB_TZASC1 | CCGR2_IPSYNC_IP2APB_TZASC2 |
+		    CCGR2_IPSYNC_VDOA;
 	WR4(sc, CCM_CCGR1, reg);
 
-	/* ipmux & ipsync (bridges), iomux, i2c */
-	reg = CCGR2_I2C1 | CCGR2_I2C2 | CCGR2_I2C3 | CCGR2_IIM |
-	    CCGR2_IOMUX_IPT | CCGR2_IPMUX1 | CCGR2_IPMUX2 | CCGR2_IPMUX3 |
-	    CCGR2_IPSYNC_IP2APB_TZASC1 | CCGR2_IPSYNC_IP2APB_TZASC2 |
-	    CCGR2_IPSYNC_VDOA;
+	if (soc == IMXSOC_6UL)
+		reg = 0xfc3fffff;
+	else
+		/* ipmux & ipsync (bridges), iomux, i2c */
+		reg = CCGR2_I2C1 | CCGR2_I2C2 | CCGR2_I2C3 | CCGR2_IIM |
+		    CCGR2_IOMUX_IPT | CCGR2_IPMUX1 | CCGR2_IPMUX2 | CCGR2_IPMUX3 |
+		    CCGR2_IPSYNC_IP2APB_TZASC1 | CCGR2_IPSYNC_IP2APB_TZASC2 |
+		    CCGR2_IPSYNC_VDOA;
 	WR4(sc, CCM_CCGR2, reg);
 
-	/* DDR memory controller */
-	reg = CCGR3_OCRAM | CCGR3_MMDC_CORE_IPG |
-	    CCGR3_MMDC_CORE_ACLK_FAST | CCGR3_CG11 | CCGR3_CG13;
+	if (soc == IMXSOC_6UL)
+		reg = 0xffffffff;
+	else
+		/* DDR memory controller */
+		reg = CCGR3_OCRAM | CCGR3_MMDC_CORE_IPG |
+		    CCGR3_MMDC_CORE_ACLK_FAST | CCGR3_CG11 | CCGR3_CG13;
 	WR4(sc, CCM_CCGR3, reg);
 
-	/* pl301 bus crossbar */
-	reg = CCGR4_PL301_MX6QFAST1_S133 |
-	    CCGR4_PL301_MX6QPER1_BCH | CCGR4_PL301_MX6QPER2_MAIN;
+	if (soc == IMXSOC_6UL)
+		reg = 0xffffffff;
+	else
+		/* pl301 bus crossbar */
+		reg = CCGR4_PL301_MX6QFAST1_S133 |
+		    CCGR4_PL301_MX6QPER1_BCH | CCGR4_PL301_MX6QPER2_MAIN;
 	WR4(sc, CCM_CCGR4, reg);
 
-	/* uarts, ssi, sdma */
-	reg = CCGR5_SDMA | CCGR5_SSI1 | CCGR5_SSI2 | CCGR5_SSI3 |
-	    CCGR5_UART | CCGR5_UART_SERIAL;
+	if (soc == IMXSOC_6UL)
+		reg = 0xffffffff;
+	else
+		/* uarts, ssi, sdma */
+		reg = CCGR5_SDMA | CCGR5_SSI1 | CCGR5_SSI2 | CCGR5_SSI3 |
+		    CCGR5_UART | CCGR5_UART_SERIAL;
 	WR4(sc, CCM_CCGR5, reg);
 
-	/* usdhc 1-4, usboh3 */
-	reg = CCGR6_USBOH3 | CCGR6_USDHC1 | CCGR6_USDHC2 |
-	    CCGR6_USDHC3 | CCGR6_USDHC4;
+	if (soc == IMXSOC_6UL)
+		reg = 0xffffffff;
+	else
+		/* usdhc 1-4, usboh3 */
+		reg = CCGR6_USBOH3 | CCGR6_USDHC1 | CCGR6_USDHC2 |
+		    CCGR6_USDHC3 | CCGR6_USDHC4;
 	WR4(sc, CCM_CCGR6, reg);
 }
 
@@ -202,8 +235,9 @@ ccm_probe(device_t dev)
 	if (!ofw_bus_status_okay(dev))
 		return (ENXIO);
 
-        if (ofw_bus_is_compatible(dev, "fsl,imx6q-ccm") == 0)
-		return (ENXIO);
+	if (ofw_bus_is_compatible(dev, "fsl,imx6q-ccm") == 0)
+		if (ofw_bus_is_compatible(dev, "fsl,imx6ul-ccm") == 0)
+			return (ENXIO);
 
 	device_set_desc(dev, "Freescale i.MX6 Clock Control Module");
 
@@ -315,6 +349,67 @@ imx_ccm_usbphy_enable(device_t _phydev)
 	    IMX6_ANALOG_CCM_PLL_USB_POWER |
 	    IMX6_ANALOG_CCM_PLL_USB_EN_USB_CLKS);
 #endif
+}
+
+int
+imx6ul_ccm_enet_set50(void)
+{
+	return imx6ul_ccm_enet_enable(CCM_ANALOG_PLL_ENET0_DIV_SELECT_50);
+}
+
+/*
+ * XXX This is really only for board designs that use the ENET_REF
+ * clock as a 50MHz output to drive the (presumably RMII) PHY.
+ * For MII or RGMII, something very different will need to happen.
+ */
+static int
+imx6ul_ccm_enet_enable(uint32_t div)
+{
+	uint32_t v;
+	int timeout;
+	phandle_t gpr_node;
+
+	gpr_node = ofw_bus_find_compatible(OF_finddevice("/"), "fsl,imx6ul-iomuxc-gpr");
+	if (gpr_node) {
+		struct syscon *gpr;
+
+		if (syscon_get_by_ofw_node(ccm_sc->dev, gpr_node, &gpr) == 0) {
+			SYSCON_MODIFY_4(gpr, IOMUXC_GPR1, IOMUXC_GPR1_ENET1_CLK_SEL, IOMUXC_GPR1_ENET1_TX_CLK_DIR);
+		}
+	}
+
+	v = RD4(ccm_sc, CCM_ANALOG_PLL_ENET);
+
+	/* Power up the PLL that feeds ENET phys. */
+	if (v & CCM_ANALOG_PLL_ENET_POWERDOWN) {
+		v &= ~CCM_ANALOG_PLL_ENET_POWERDOWN;
+		WR4(ccm_sc, CCM_ANALOG_PLL_ENET, v);
+	}
+
+	/* Wait for lock. */
+	if (!(v & CCM_ANALOG_PLL_ENET_LOCK)) {
+		for (timeout = 100000; timeout > 0; timeout--) {
+			if ((v = RD4(ccm_sc, CCM_ANALOG_PLL_ENET)) &
+			   CCM_ANALOG_PLL_ENET_LOCK) {
+				break;
+			}
+		}
+		if (timeout <= 0)
+			return ETIMEDOUT;
+	}
+
+	/* Enable the PLL */
+	v |= CCM_ANALOG_PLL_ENET_ENABLE;
+	v &= ~CCM_ANALOG_PLL_ENET_BYPASS;
+	v &= ~(CCM_ANALOG_PLL_ENET0_DIV_MASK | CCM_ANALOG_PLL_ENET1_DIV_MASK);
+	v |= div;
+	WR4(ccm_sc, CCM_ANALOG_PLL_ENET, v);
+	/* Set up as output to PHY */
+
+	/* Un-gate the enet controller. */
+	WR4(ccm_sc, CCM_CCGR3, RD4(ccm_sc, CCM_CCGR3) | CCGR3_UL_ENET);
+
+	return 0;
 }
 
 int
@@ -495,7 +590,6 @@ imx_ccm_get_cacrr(void)
 void
 imx_ccm_set_cacrr(uint32_t divisor)
 {
-
 	WR4(ccm_sc, CCM_CACCR, divisor);
 }
 

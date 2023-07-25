@@ -110,6 +110,7 @@ struct imx6_anatop_softc {
 	uint32_t	temp_throttle_reset_cnt;
 	uint32_t	temp_throttle_trigger_cnt;
 	uint32_t	temp_throttle_val;
+	boolean_t	irq_fired;
 };
 
 static struct imx6_anatop_softc *imx6_anatop_sc;
@@ -122,10 +123,12 @@ static struct imx6_anatop_softc *imx6_anatop_sc;
  * more than 200mV, and the minimum SOC voltage is 1150mV, so that
  * dictates the 950mV entry in this table.
  */
-static struct oppt {
+struct oppt {
 	uint32_t	mhz;
 	uint32_t	mv;
-} imx6_oppt_table[] = {
+};
+
+static struct oppt imx6_oppt_table[] = {
 	{ 396,	 950},
 	{ 792,	1150},
 	{ 852,	1225},
@@ -133,12 +136,11 @@ static struct oppt {
 	{1200,	1275},
 };
 
-/*
- * Table of CPU max frequencies.  This is used to translate the max frequency
- * value (0-3) from the ocotp CFG3 register into a mhz value that can be looked
- * up in the operating points table.
- */
-static uint32_t imx6_ocotp_mhz_tab[] = {792, 852, 996, 1200};
+static struct oppt imx6ul_oppt_table[] = {
+	{528, 1150},
+	{396, 1000},
+	{198,  950},
+};
 
 #define	TZ_ZEROC	2731	/* deci-Kelvin <-> deci-Celsius offset. */
 
@@ -258,20 +260,30 @@ static struct oppt *
 cpufreq_nearest_oppt(struct imx6_anatop_softc *sc, uint32_t cpu_newmhz)
 {
 	int d, diff, i, nearest;
+	static struct oppt *tbl;
+	int tblsz;
 
+	if (imx_soc_type() == IMXSOC_6UL) {
+		tbl = imx6ul_oppt_table;
+		tblsz = nitems(imx6ul_oppt_table);
+	}
+	else {
+		tbl = imx6_oppt_table;
+		tblsz = nitems(imx6_oppt_table);
+	}
 	if (cpu_newmhz > sc->cpu_maxmhz_hw && !sc->cpu_overclock_enable)
 		cpu_newmhz = sc->cpu_maxmhz_hw;
 
 	diff = INT_MAX;
 	nearest = 0;
-	for (i = 0; i < nitems(imx6_oppt_table); ++i) {
-		d = abs((int)cpu_newmhz - (int)imx6_oppt_table[i].mhz);
+	for (i = 0; i < tblsz; ++i) {
+		d = abs((int)cpu_newmhz - (int)tbl[i].mhz);
 		if (diff > d) {
 			diff = d;
 			nearest = i;
 		}
 	}
-	return (&imx6_oppt_table[nearest]);
+	return (&tbl[nearest]);
 }
 
 static void 
@@ -392,7 +404,6 @@ cpufreq_sysctl_maxmhz(SYSCTL_HANDLER_ARGS)
 static void
 cpufreq_initialize(struct imx6_anatop_softc *sc)
 {
-	uint32_t cfg3speed;
 	struct oppt * op;
 
 	SYSCTL_ADD_INT(NULL, SYSCTL_STATIC_CHILDREN(_hw_imx),
@@ -435,9 +446,7 @@ cpufreq_initialize(struct imx6_anatop_softc *sc)
 	 *   - 2b'00: 792000000Hz;
 	 * The default hardware max speed can be overridden by a tunable.
 	 */
-	cfg3speed = (fsl_ocotp_read_4(FSL_OCOTP_CFG3) & 
-	    FSL_OCOTP_CFG3_SPEED_MASK) >> FSL_OCOTP_CFG3_SPEED_SHIFT;
-	sc->cpu_maxmhz_hw = imx6_ocotp_mhz_tab[cfg3speed];
+	sc->cpu_maxmhz_hw = fsl_ocotp_get_max_mhz();
 	sc->cpu_maxmhz = sc->cpu_maxmhz_hw;
 
 	TUNABLE_INT_FETCH("hw.imx6.cpu_minmhz", &sc->cpu_minmhz);
@@ -550,18 +559,49 @@ tempmon_goslow(struct imx6_anatop_softc *sc)
 	}
 }
 
+static void
+tempmon_apply_speed(struct imx6_anatop_softc *sc)
+{
+	/* Lower counts are higher temperatures. */
+	if (sc->temp_last_cnt < sc->temp_throttle_trigger_cnt)
+		tempmon_goslow(sc);
+	else if (sc->temp_last_cnt > (sc->temp_throttle_reset_cnt))
+		tempmon_gofast(sc);
+}
+
 static int
 tempmon_intr(void *arg)
 {
 	struct imx6_anatop_softc *sc = arg;
+	uint32_t misc1;
 
 	/*
 	 * XXX Note that this code doesn't currently run (for some mysterious
 	 * reason we just never get an interrupt), so the real monitoring is
 	 * done by tempmon_throttle_check().
+	 * XXX Runs for me, 14-CURRENT July 26, 2023 - shurd@
+	 * I've made it so the callout stops being scheduled if the intr fires
 	 */
-	tempmon_goslow(sc);
+	sc->irq_fired = true;
+	temp_update_count(sc);
+	misc1 = imx6_anatop_read_4(IMX6_ANALOG_PMU_MISC1);
+	if (misc1 & IMX6_ANALOG_PMU_MISC1_IRQ_TEMPPANIC)
+		panic("Temperature panic triggered\n");
+	// Clear the interrupt
+	misc1 &= ~(IMX6_ANALOG_PMU_MISC1_IRQ_TEMPHIGH | IMX6_ANALOG_PMU_MISC1_IRQ_TEMPLOW);
+	imx6_anatop_write_4(IMX6_ANALOG_PMU_MISC1, misc1);
+
+	if (sc->temp_last_cnt < sc->temp_throttle_trigger_cnt) {
+		sc->temp_last_cnt = sc->temp_throttle_reset_cnt + 1;
+		tempmon_gofast(sc);
+	}
+	else if (sc->temp_last_cnt > (sc->temp_throttle_reset_cnt)) {
+		sc->temp_last_cnt = sc->temp_throttle_trigger_cnt - 1;
+		tempmon_goslow(sc);
+	}
+	// Clear the interrupt
 	/* XXX Schedule callout to speed back up eventually. */
+
 	return (FILTER_HANDLED);
 }
 
@@ -570,30 +610,21 @@ tempmon_throttle_check(void *arg)
 {
 	struct imx6_anatop_softc *sc = arg;
 
-	/* Lower counts are higher temperatures. */
-	if (sc->temp_last_cnt < sc->temp_throttle_trigger_cnt)
-		tempmon_goslow(sc);
-	else if (sc->temp_last_cnt > (sc->temp_throttle_reset_cnt))
-		tempmon_gofast(sc);
+	tempmon_apply_speed(sc);
 
-	callout_reset_sbt(&sc->temp_throttle_callout, sc->temp_throttle_delay,
-		0, tempmon_throttle_check, sc, 0);
-
+	if (!sc->irq_fired)
+		callout_reset_sbt(&sc->temp_throttle_callout, sc->temp_throttle_delay,
+		    0, tempmon_throttle_check, sc, 0);
 }
 
 static void
 initialize_tempmon(struct imx6_anatop_softc *sc)
 {
-	uint32_t cal;
-
 	/*
 	 * Fetch calibration data: a sensor count at room temperature (25C),
 	 * a sensor count at a high temperature, and that temperature
 	 */
-	cal = fsl_ocotp_read_4(FSL_OCOTP_ANA1);
-	sc->temp_room_cnt = (cal & 0xFFF00000) >> 20;
-	sc->temp_high_cnt = (cal & 0x000FFF00) >> 8;
-	sc->temp_high_val = (cal & 0x000000FF) * 10;
+	fsl_ocotp_get_temp_calibration(&sc->temp_room_cnt, &sc->temp_high_cnt, &sc->temp_high_val);
 
 	/*
 	 * Throttle to a lower cpu freq at 10C below the "hot" temperature, and
@@ -614,6 +645,11 @@ initialize_tempmon(struct imx6_anatop_softc *sc)
 	    (sc->temp_throttle_trigger_cnt << 
 	    IMX6_ANALOG_TEMPMON_TEMPSENSE0_ALARM_SHIFT) |
 	    IMX6_ANALOG_TEMPMON_TEMPSENSE0_MEASURE);
+	imx6_anatop_write_4(IMX6_ANALOG_TEMPMON_TEMPSENSE2,
+	    ((sc->temp_high_val & IMX6_ANALOG_TEMPMON_TEMPSENSE2_VALUE_MASK) <<
+	    IMX6_ANALOG_TEMPMON_TEMPSENSE2_PANIC_SHIFT) |
+	    (IMX6_ANALOG_TEMPMON_TEMPSENSE2_VALUE_MASK <<
+	    IMX6_ANALOG_TEMPMON_TEMPSENSE2_LOW_SHIFT));
 
 	/*
 	 * XXX Note that the alarm-interrupt feature isn't working yet, so

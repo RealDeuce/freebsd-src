@@ -89,6 +89,11 @@ __FBSDID("$FreeBSD$");
 #include <dev/mii/mii_fdt.h>
 #include "miibus_if.h"
 
+#ifdef SOC_IMX6
+#include <arm/freescale/imx/imx_ccmvar.h>
+#include <arm/freescale/imx/imx_machdep.h>
+#endif
+
 /*
  * There are small differences in the hardware on various SoCs.  Not every SoC
  * we support has its own FECTYPE; most work as GENERIC and only the ones that
@@ -364,6 +369,29 @@ ffec_miibus_writereg(device_t dev, int phy, int reg, int val)
 }
 
 static void
+ffec_rcr_phy_flags(uint32_t *rcr, mii_contype_t t)
+{
+	switch (t) {
+	case MII_CONTYPE_MII:
+		*rcr |= FEC_RCR_MII_MODE;
+		break;
+	case MII_CONTYPE_RMII:
+		*rcr |= FEC_RCR_MII_MODE; /* Must always be on even for R[G]MII. */
+		*rcr |= FEC_RCR_RMII_MODE;
+		break;
+	case MII_CONTYPE_RGMII:
+	case MII_CONTYPE_RGMII_ID:
+	case MII_CONTYPE_RGMII_RXID:
+	case MII_CONTYPE_RGMII_TXID:
+		*rcr |= FEC_RCR_MII_MODE; /* Must always be on even for R[G]MII. */
+		*rcr |= FEC_RCR_RGMII_EN;
+		break;
+	default:
+		break;
+	}
+}
+
+static void
 ffec_miibus_statchg(device_t dev)
 {
 	struct ffec_softc *sc;
@@ -391,20 +419,7 @@ ffec_miibus_statchg(device_t dev)
 	    FEC_RCR_RGMII_EN | FEC_RCR_DRT | FEC_RCR_FCE);
 	tcr = RD4(sc, FEC_TCR_REG) & ~FEC_TCR_FDEN;
 
-	rcr |= FEC_RCR_MII_MODE; /* Must always be on even for R[G]MII. */
-	switch (sc->phy_conn_type) {
-	case MII_CONTYPE_RMII:
-		rcr |= FEC_RCR_RMII_MODE;
-		break;
-	case MII_CONTYPE_RGMII:
-	case MII_CONTYPE_RGMII_ID:
-	case MII_CONTYPE_RGMII_RXID:
-	case MII_CONTYPE_RGMII_TXID:
-		rcr |= FEC_RCR_RGMII_EN;
-		break;
-	default:
-		break;
-	}
+	ffec_rcr_phy_flags(&rcr, sc->phy_conn_type);
 
 	switch (IFM_SUBTYPE(mii->mii_media_active)) {
 	case IFM_1000_T:
@@ -420,6 +435,8 @@ ffec_miibus_statchg(device_t dev)
 	case IFM_NONE:
 		sc->link_is_up = false;
 		return;
+	case IFM_AUTO:
+		break;
 	default:
 		sc->link_is_up = false;
 		device_printf(dev, "Unsupported media %u\n",
@@ -1154,7 +1171,9 @@ ffec_init_locked(struct ffec_softc *sc)
 	 *
 	 * Set max frame length + clean out anything left from u-boot.
 	 */
-	WR4(sc, FEC_RCR_REG, (maxfl << FEC_RCR_MAX_FL_SHIFT));
+	regval = (maxfl << FEC_RCR_MAX_FL_SHIFT);
+	ffec_rcr_phy_flags(&regval, sc->phy_conn_type);
+	WR4(sc, FEC_RCR_REG, regval);
 
 	/*
 	 * TCR - Transmit control register.
@@ -1471,8 +1490,10 @@ ffec_attach(device_t dev)
 	if_t ifp = NULL;
 	struct mbuf *m;
 	void *dummy;
+	char *name;
 	uintptr_t typeflags;
 	phandle_t ofw_node;
+	phandle_t mdio_node;
 	uint32_t idx, mscr;
 	int error, phynum, rid, irq;
 	uint8_t eaddr[ETHER_ADDR_LEN];
@@ -1514,6 +1535,12 @@ ffec_attach(device_t dev)
 		error = ENOATTR;
 		goto out;
 	}
+#ifdef SOC_IMX6
+	/* Enable 50MHz ENET_REF output clock */
+	if ((imx_soc_type() == IMXSOC_6UL) &&
+	    sc->phy_conn_type == MII_CONTYPE_RMII)
+		imx6ul_ccm_enet_set50();
+#endif
 
 	callout_init_mtx(&sc->ffec_callout, &sc->mtx, 0);
 
@@ -1734,6 +1761,30 @@ ffec_attach(device_t dev)
 		if (bootverbose)
 			device_printf(dev, "PHY preamble disabled\n");
 	}
+	/*
+	 * Now look for the documented mdio.suppress-preamble...
+	 * this is allowed to be named mdio@<addr>
+	 */
+	for (mdio_node = OF_child(ofw_node); mdio_node != 0; mdio_node = OF_peer(mdio_node)) {
+		if (OF_getprop_alloc(mdio_node, "name", (void **)&name) != -1) {
+			if (strcmp(name, "mdio") == 0) {
+				free(name, M_OFWPROP);
+				break;
+			}
+			if (strncmp(name, "mdio@", 5) == 0) {
+				free(name, M_OFWPROP);
+				break;
+			}
+			free(name, M_OFWPROP);
+		}
+	}
+	if (mdio_node != 0) {
+		if (OF_hasprop(mdio_node, "suppress-preamble")) {
+			mscr |= FEC_MSCR_DIS_PRE;
+			if (bootverbose)
+				device_printf(dev, "PHY preamble disabled\n");
+		}
+	}
 	WR4(sc, FEC_MSCR_REG, mscr);
 
 	/* Set up the ethernet interface. */
@@ -1758,6 +1809,11 @@ ffec_attach(device_t dev)
 
 	/* Set up the miigasket hardware (if any). */
 	ffec_miigasket_setup(sc);
+
+	/* RCR - Receive control register.  */
+	uint32_t regval = RD4(sc, FEC_RCR_REG);
+	ffec_rcr_phy_flags(&regval, sc->phy_conn_type);
+	WR4(sc, FEC_RCR_REG, regval);
 
 	/* Attach the mii driver. */
 	if (fdt_get_phyaddr(ofw_node, dev, &phynum, &dummy) != 0) {

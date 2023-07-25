@@ -42,6 +42,9 @@ struct mii_fdt_phy_config {
 	mii_contype_t	con_type;	/* MAC<->PHY connection type */
 	u_int		max_speed;	/* Mbits/sec, 0 = not specified */
 	uint32_t	flags;		/* MIIF_FDT_xxx boolean properties */
+	struct gpiobus_pin	*reset_gpio;
+	uint32_t	reset_assert_us;
+	uint32_t	reset_deassert_us;
 };
 typedef struct mii_fdt_phy_config mii_fdt_phy_config_t;
 

@@ -60,6 +60,7 @@ options 	SOC_MV_ARMADA38X
 options 	SOC_MV_ARMADAXP
 options 	SOC_TI_AM335X
 options 	SOC_OMAP4
+options 	SOC_IMX6
 
 options 	SCHED_ULE		# ULE scheduler
 options 	SMP			# Enable multiple cores

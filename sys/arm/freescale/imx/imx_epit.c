@@ -374,7 +374,8 @@ epit_probe(device_t dev)
 	bus_free_resource(dev, SYS_RES_MEMORY, memres);
 
 	if (imx_soc_family() == 6) {
-		if (unit > 0)
+		// Having a second EPIT allows using it for kern.timecounter
+		if (unit > 1)
 			return (ENXIO);
 		if (ioaddr != imx6_epit_ioaddr[unit])
 			return (ENXIO);

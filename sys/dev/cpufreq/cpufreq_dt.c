@@ -500,6 +500,11 @@ cpufreq_dt_attach(device_t dev)
 	else if (regulator_get_by_ofw_property(dev, node, "cpu0-supply",
 	    &sc->reg) == 0)
 		device_printf(dev, "Found cpu0-supply\n");
+	else if (regulator_get_by_ofw_property(dev, node, "arm-supply",
+	    &sc->reg) == 0)
+		device_printf(dev, "Found arm-supply\n");
+	else
+		device_printf(dev, "No regulator found\n");
 
 	/*
 	 * Determine which operating mode we're in.  Error out if we expect

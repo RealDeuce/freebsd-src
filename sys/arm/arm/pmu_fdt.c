@@ -151,6 +151,10 @@ pmu_parse_intr(device_t dev, struct pmu_softc *sc)
 		goto done;
 	}
 
+#ifndef SMP
+	return 0;
+#endif
+
 	/* Check if PMU have one per-CPU interrupt */
 	if (intr_is_per_cpu(sc->irq[0].res)) {
 		if (has_affinity) {
